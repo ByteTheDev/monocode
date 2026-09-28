@@ -51,9 +51,12 @@ import {
   notifyGitChanged,
   readTextFile,
   subscribeGitChanged,
-  writeTextFile,
 } from "../../../platform/tauri/fs";
 import { syncWatchedMtime, watchFile } from "../model/fileWatch";
+import {
+  assertFileUnchanged,
+  writeTextFileIfUnchanged,
+} from "../model/safeSave";
 import { displayPath } from "../../../shared/lib/paths";
 import type { EditorNavigation } from "../../search/model/search";
 import { MarkdownDocumentPreview } from "../../sessions/ui/MarkdownDocumentPreview";
@@ -305,11 +308,11 @@ export function FileEditor({
   }, [loadState.status, path, reloadFromDisk]);
 
   const save = useCallback(
-    async (content: string) => {
+    async (content: string, expectedDiskContent: string) => {
       const generation = ++saveGeneration.current;
       setSaveState({ status: "saving" });
       const operation = saveQueue.current.then(() =>
-        writeTextFile(path, content),
+        writeTextFileIfUnchanged(path, expectedDiskContent, content),
       );
       saveQueue.current = operation.catch(() => {});
       try {
@@ -378,7 +381,7 @@ export function FileEditor({
   if (loadState.status === "loading") {
     return (
       <div className="grid h-full place-items-center text-[12px] text-content/45">
-        Opening {basename(path)}…
+        Opening {basename(path)}?
       </div>
     );
   }
@@ -389,7 +392,7 @@ export function FileEditor({
         <div className="max-w-md text-center">
           <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
           <p className="text-[13px] text-content">
-            Couldn’t open {basename(path)}
+            Couldn?t open {basename(path)}
           </p>
           <p className="mt-1 text-[12px] leading-5 text-content/50">
             {loadState.message}
@@ -471,7 +474,7 @@ export function FileEditor({
           {relativePath}
         </span>
         {saveState.status === "saving" ? (
-          <span>Saving…</span>
+          <span>Saving?</span>
         ) : saveState.status === "saved" ? (
           <span>Saved</span>
         ) : saveState.status === "error" ? (
@@ -510,7 +513,7 @@ function CodeMirrorEditor({
   navigation?: EditorNavigationRequest | null;
   onDirtyChange: (dirty: boolean) => void;
   onErrorCountChange: (count: number) => void;
-  onSave: (content: string) => Promise<void>;
+  onSave: (content: string, expectedDiskContent: string) => Promise<void>;
   onStageGit?: (contents: string) => Promise<void>;
   onDocChange?: (content: string) => void;
 }) {
@@ -637,6 +640,13 @@ function CodeMirrorEditor({
       const generation = ++saveGeneration;
       void (async () => {
         const before = view.state.doc.toString();
+        const expectedDiskContent =
+          savedDocumentRef.current?.toString() ?? valueRef.current;
+        try {
+          await assertFileUnchanged(path, expectedDiskContent);
+        } catch {
+          return;
+        }
         if (loadFormatOnSave()) {
           const result = await formatText(
             path,
@@ -663,7 +673,10 @@ function CodeMirrorEditor({
 
         const document = view.state.doc;
         try {
-          await onSaveRef.current(document.toString());
+          await onSaveRef.current(
+            document.toString(),
+            expectedDiskContent,
+          );
         } catch {
           return;
         }
